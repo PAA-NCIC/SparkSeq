@@ -1,0 +1,150 @@
+/*
+ * Copyright (c) 2017 NCIC, Institute of Computing Technology, Chinese Academy of Sciences
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ */
+package org.ncic.bioinfo.sparkseq.algorithms.walker.mutect;
+
+import org.ncic.bioinfo.sparkseq.algorithms.utils.BaseUtils;
+import org.ncic.bioinfo.sparkseq.algorithms.walker.haplotypecaller.DiploidGenotype;
+import org.ncic.bioinfo.sparkseq.algorithms.walker.haplotypecaller.DiploidSNPGenotypeLikelihoods;
+
+import static java.lang.Math.log10;
+import static java.lang.Math.pow;
+
+/**
+ * Author: wbc
+ */
+public class VariableAllelicRatioGenotypeLikelihoods extends DiploidSNPGenotypeLikelihoods {
+    protected double logF;
+    protected double logOneMinusF;
+    protected double logHalf;
+    protected char ref;
+
+
+    /**
+     * Create a new GenotypeLikelhoods object with flat priors for each diploid genotype
+     *
+     * @param ref reference base
+     * @param f non-reference allele fraction estimate
+     */
+    public VariableAllelicRatioGenotypeLikelihoods(char ref, double f) {
+        super(0);
+        this.ref = ref;
+
+        this.logF = log10(1/f);
+        this.logOneMinusF = log10(1/(1-f));
+        this.logHalf = log10(1/.5);
+    }
+
+    public double getLikelihood(DiploidGenotype g) {
+        return getLikelihoods()[g.ordinal()];
+    }
+
+    protected DiploidSNPGenotypeLikelihoods calculateGenotypeLikelihoods(byte observedBase1, byte qualityScore1, byte observedBase2, byte qualityScore2) {
+        double[] log10FourBaseLikelihoods = computeLog10Likelihoods(observedBase1, qualityScore1, observedBase2, qualityScore2);
+
+        try {
+
+            VariableAllelicRatioGenotypeLikelihoods gl = (VariableAllelicRatioGenotypeLikelihoods)this.clone();
+            gl.setToZero();
+
+            for ( DiploidGenotype g : DiploidGenotype.values() ) {
+
+                double fBase1;
+                double fBase2;
+                if (g.base1 == ref || g.base2 == ref) {
+
+                    // if it is ref/ref use half
+                    if (g.base1 == g.base2) {
+                        fBase1 = logHalf;
+                        fBase2 = logHalf;
+                        // if one base is reference, use f
+                    } else {
+                        fBase1 = (g.base1 == ref)? logOneMinusF : logF;
+                        fBase2 = (g.base2 == ref)? logOneMinusF : logF;
+                    }
+                } else {
+                    fBase1 = logHalf;
+                    fBase2 = logHalf;
+                }
+
+                double p_base = 0.0;
+                p_base += pow(10, log10FourBaseLikelihoods[BaseUtils.simpleBaseToBaseIndex(g.base1)] - fBase1);
+                p_base += pow(10, log10FourBaseLikelihoods[BaseUtils.simpleBaseToBaseIndex(g.base2)] - fBase2);
+                double likelihood = log10(p_base);
+
+                gl.log10Likelihoods[g.ordinal()] += likelihood;
+                //gl.log10Posteriors[g.ordinal()] += likelihood;
+            }
+            if ( VERBOSE ) {
+                for ( DiploidGenotype g : DiploidGenotype.values() ) { System.out.printf("%s\t", g); }
+                System.out.println();
+                for ( DiploidGenotype g : DiploidGenotype.values() ) { System.out.printf("%.2f\t", gl.log10Likelihoods[g.ordinal()]); }
+                System.out.println();
+            }
+
+            return gl;
+
+        } catch ( CloneNotSupportedException e ) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public int add(byte observedBase1, byte qualityScore1) {
+        byte observedBase2 = 0, qualityScore2 = 0;
+
+        // Just look up the cached result if it's available, or compute and store it
+        DiploidSNPGenotypeLikelihoods gl;
+        if ( ! inCache(observedBase1, qualityScore1, observedBase2, qualityScore2, FIXED_PLOIDY) ) {
+            gl = calculateCachedGenotypeLikelihoods(observedBase1, qualityScore1, observedBase2, qualityScore2, FIXED_PLOIDY);
+        } else {
+            gl = getCachedGenotypeLikelihoods(observedBase1, qualityScore1, observedBase2, qualityScore2, FIXED_PLOIDY);
+        }
+
+        double[] likelihoods = gl.getLikelihoods();
+
+        for ( DiploidGenotype g : DiploidGenotype.values() ) {
+            double likelihood = likelihoods[g.ordinal()];
+
+            log10Likelihoods[g.ordinal()] += likelihood;
+        }
+
+        return 1;
+    }
+
+
+    ////////////////////////////////////////////////////////////////////////////////////////
+    //
+    // Need to disable superclass caching since it's not built to handle variable allelic fractions
+    //
+    ////////////////////////////////////////////////////////////////////////////////////////
+
+    @Override
+    protected boolean inCache(byte observedBase1, byte qualityScore1, byte observedBase2, byte qualityScore2, int ploidy) {
+        return false;
+    }
+
+    @Override
+    protected void setCache( DiploidSNPGenotypeLikelihoods[][][][][] cache,
+                             byte observedBase1, byte qualityScore1, byte observedBase2, byte qualityScore2, int ploidy,
+                             DiploidSNPGenotypeLikelihoods val ) {
+        // do nothing
+    }
+}
